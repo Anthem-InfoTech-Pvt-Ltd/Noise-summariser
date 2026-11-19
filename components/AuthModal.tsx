@@ -1,22 +1,116 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { X, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react'
+import {
+  X,
+  Loader2,
+  AlertCircle,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  Check,
+  Circle,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { supabase } from '@/lib/supabase'
 
+type Mode = 'login' | 'signup' | 'forgot' | 'reset'
+
 interface AuthModalProps {
   onClose: () => void
+  initialMode?: 'login' | 'reset'
 }
 
-export default function AuthModal({ onClose }: AuthModalProps) {
-  const [mode, setMode] = useState<'login' | 'signup'>('login')
+const PASSWORD_RULES = [
+  { label: 'At least 8 characters', test: (p: string) => p.length >= 8 },
+  { label: 'One uppercase letter (A-Z)', test: (p: string) => /[A-Z]/.test(p) },
+  { label: 'One lowercase letter (a-z)', test: (p: string) => /[a-z]/.test(p) },
+  { label: 'One number (0-9)', test: (p: string) => /[0-9]/.test(p) },
+  { label: 'One special character (!@#$...)', test: (p: string) => /[^A-Za-z0-9]/.test(p) },
+]
+
+const TITLES: Record<Mode, { title: string; subtitle: string }> = {
+  login: {
+    title: 'Welcome back',
+    subtitle: 'Log in to save and view your summary history.',
+  },
+  signup: {
+    title: 'Create account',
+    subtitle: 'Sign up to save your summaries and access them anytime.',
+  },
+  forgot: {
+    title: 'Forgot password?',
+    subtitle: "Enter your email and we'll send you a link to reset your password.",
+  },
+  reset: {
+    title: 'Set a new password',
+    subtitle: 'Choose a strong password for your account.',
+  },
+}
+
+function PasswordField({
+  id,
+  label,
+  value,
+  onChange,
+  disabled,
+  autoComplete,
+}: {
+  id: string
+  label: string
+  value: string
+  onChange: (v: string) => void
+  disabled: boolean
+  autoComplete: string
+}) {
+  const [visible, setVisible] = useState(false)
+
+  return (
+    <div className="space-y-2">
+      <label htmlFor={id} className="text-sm font-medium text-foreground">
+        {label}
+      </label>
+      <div className="relative">
+        <input
+          id={id}
+          type={visible ? 'text' : 'password'}
+          required
+          autoComplete={autoComplete}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+          className="w-full rounded-md border border-border bg-background px-3 py-2 pr-10 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={() => setVisible((v) => !v)}
+          aria-label={visible ? 'Hide password' : 'Show password'}
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:text-foreground"
+        >
+          {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export default function AuthModal({ onClose, initialMode = 'login' }: AuthModalProps) {
+  const [mode, setMode] = useState<Mode>(initialMode)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
+
+  const needsStrongPassword = mode === 'signup' || mode === 'reset'
+  const allRulesPass = PASSWORD_RULES.every((rule) => rule.test(password))
+  const passwordsMatch = password === confirmPassword
+  const canSubmit =
+    !loading &&
+    (!needsStrongPassword ||
+      (allRulesPass && passwordsMatch && confirmPassword.length > 0))
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -26,11 +120,39 @@ export default function AuthModal({ onClose }: AuthModalProps) {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
 
+  const switchMode = (next: Mode) => {
+    setMode(next)
+    setError(null)
+    setInfo(null)
+    setPassword('')
+    setConfirmPassword('')
+  }
+
+  const friendlyError = (message: string) => {
+    const m = message.toLowerCase()
+    if (m.includes('invalid login credentials')) return 'Incorrect email or password.'
+    if (m.includes('email not confirmed'))
+      return 'Please confirm your email first. Check your inbox for the verification link.'
+    if (m.includes('already registered')) return 'An account with this email already exists.'
+    return message
+  }
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!supabase) {
       setError('Login is not configured yet.')
       return
+    }
+
+    if (needsStrongPassword) {
+      if (!allRulesPass) {
+        setError('Password does not meet all the requirements.')
+        return
+      }
+      if (!passwordsMatch) {
+        setError('Passwords do not match.')
+        return
+      }
     }
 
     setLoading(true)
@@ -42,27 +164,59 @@ export default function AuthModal({ onClose }: AuthModalProps) {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
         onClose()
-      } else {
-        const { data, error } = await supabase.auth.signUp({ email, password })
+      } else if (mode === 'signup') {
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: window.location.origin },
+        })
         if (error) throw error
+
+        // Email pehle se registered ho to Supabase bina error ke empty identities deta hai
+        if (data.user && data.user.identities && data.user.identities.length === 0) {
+          throw new Error('An account with this email already exists.')
+        }
+
         if (data.session) {
           onClose()
         } else {
-          setInfo('Account created. Please check your email to confirm, then log in.')
-          setMode('login')
-          setPassword('')
+          switchMode('login')
+          setInfo(
+            'Account created. We sent a verification link to your email. Please verify your email, then log in.'
+          )
         }
+      } else if (mode === 'forgot') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin,
+        })
+        if (error) throw error
+        setInfo(
+          'If an account exists for this email, a password reset link has been sent. Please check your inbox.'
+        )
+      } else if (mode === 'reset') {
+        const { error } = await supabase.auth.updateUser({ password })
+        if (error) throw error
+        onClose()
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong')
+      setError(friendlyError(err instanceof Error ? err.message : 'Something went wrong'))
     } finally {
       setLoading(false)
     }
   }
 
+  const submitLabel =
+    mode === 'login'
+      ? 'Log in'
+      : mode === 'signup'
+        ? 'Sign up'
+        : mode === 'forgot'
+          ? 'Send reset link'
+          : 'Update password'
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 px-4 py-6"
       onClick={onClose}
     >
       <Card
@@ -80,49 +234,89 @@ export default function AuthModal({ onClose }: AuthModalProps) {
 
         <div className="space-y-6 p-6 sm:p-8">
           <div className="space-y-1">
-            <h2 className="text-2xl font-semibold text-foreground">
-              {mode === 'login' ? 'Welcome back' : 'Create account'}
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              {mode === 'login'
-                ? 'Log in to save and view your summary history.'
-                : 'Sign up to save your summaries and access them anytime.'}
-            </p>
+            <h2 className="text-2xl font-semibold text-foreground">{TITLES[mode].title}</h2>
+            <p className="text-sm text-muted-foreground">{TITLES[mode].subtitle}</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <label htmlFor="auth-email" className="text-sm font-medium text-foreground">
-                Email
-              </label>
-              <input
-                id="auth-email"
-                type="email"
-                required
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={loading}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-              />
-            </div>
+            {mode !== 'reset' && (
+              <div className="space-y-2">
+                <label htmlFor="auth-email" className="text-sm font-medium text-foreground">
+                  Email
+                </label>
+                <input
+                  id="auth-email"
+                  type="email"
+                  required
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  disabled={loading}
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                />
+              </div>
+            )}
 
-            <div className="space-y-2">
-              <label htmlFor="auth-password" className="text-sm font-medium text-foreground">
-                Password
-              </label>
-              <input
+            {mode !== 'forgot' && (
+              <PasswordField
                 id="auth-password"
-                type="password"
-                required
-                minLength={6}
-                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                label={mode === 'reset' ? 'New password' : 'Password'}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={setPassword}
                 disabled={loading}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               />
-            </div>
+            )}
+
+            {mode === 'login' && (
+              <div className="text-right">
+                <button
+                  type="button"
+                  onClick={() => switchMode('forgot')}
+                  className="text-sm font-medium text-primary hover:underline"
+                >
+                  Forgot password?
+                </button>
+              </div>
+            )}
+
+            {needsStrongPassword && (
+              <>
+                <ul className="space-y-1 rounded-lg bg-muted/50 p-3">
+                  {PASSWORD_RULES.map((rule) => {
+                    const passed = rule.test(password)
+                    return (
+                      <li
+                        key={rule.label}
+                        className={`flex items-center gap-2 text-xs ${
+                          passed ? 'text-green-600' : 'text-muted-foreground'
+                        }`}
+                      >
+                        {passed ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Circle className="h-3.5 w-3.5" />
+                        )}
+                        {rule.label}
+                      </li>
+                    )
+                  })}
+                </ul>
+
+                <PasswordField
+                  id="auth-confirm-password"
+                  label="Confirm password"
+                  value={confirmPassword}
+                  onChange={setConfirmPassword}
+                  disabled={loading}
+                  autoComplete="new-password"
+                />
+
+                {confirmPassword.length > 0 && !passwordsMatch && (
+                  <p className="text-xs text-destructive">Passwords do not match.</p>
+                )}
+              </>
+            )}
 
             {error && (
               <div
@@ -141,26 +335,49 @@ export default function AuthModal({ onClose }: AuthModalProps) {
               </div>
             )}
 
-            <Button type="submit" size="lg" disabled={loading} className="w-full gap-2">
+            <Button type="submit" size="lg" disabled={!canSubmit} className="w-full gap-2">
               {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-              {mode === 'login' ? 'Log in' : 'Sign up'}
+              {submitLabel}
             </Button>
           </form>
 
-          <p className="text-center text-sm text-muted-foreground">
-            {mode === 'login' ? "Don't have an account?" : 'Already have an account?'}{' '}
-            <button
-              type="button"
-              onClick={() => {
-                setMode(mode === 'login' ? 'signup' : 'login')
-                setError(null)
-                setInfo(null)
-              }}
-              className="font-medium text-primary hover:underline"
-            >
-              {mode === 'login' ? 'Sign up' : 'Log in'}
-            </button>
-          </p>
+          {mode === 'login' && (
+            <p className="text-center text-sm text-muted-foreground">
+              Don&apos;t have an account?{' '}
+              <button
+                type="button"
+                onClick={() => switchMode('signup')}
+                className="font-medium text-primary hover:underline"
+              >
+                Sign up
+              </button>
+            </p>
+          )}
+
+          {mode === 'signup' && (
+            <p className="text-center text-sm text-muted-foreground">
+              Already have an account?{' '}
+              <button
+                type="button"
+                onClick={() => switchMode('login')}
+                className="font-medium text-primary hover:underline"
+              >
+                Log in
+              </button>
+            </p>
+          )}
+
+          {mode === 'forgot' && (
+            <p className="text-center text-sm text-muted-foreground">
+              <button
+                type="button"
+                onClick={() => switchMode('login')}
+                className="font-medium text-primary hover:underline"
+              >
+                Back to log in
+              </button>
+            </p>
+          )}
         </div>
       </Card>
     </div>

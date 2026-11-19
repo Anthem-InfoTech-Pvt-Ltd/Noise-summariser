@@ -36,6 +36,7 @@ export default function Home() {
   // Auth + history
   const [user, setUser] = useState<User | null>(null)
   const [showAuth, setShowAuth] = useState(false)
+  const [authMode, setAuthMode] = useState<'login' | 'reset'>('login')
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -62,8 +63,14 @@ export default function Home() {
       setUser(data.session?.user ?? null)
     })
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null)
+
+      // Reset password email link se wapas aane par naya password set karne ka form kholo
+      if (event === 'PASSWORD_RECOVERY') {
+        setAuthMode('reset')
+        setShowAuth(true)
+      }
     })
 
     return () => listener.subscription.unsubscribe()
@@ -221,7 +228,10 @@ export default function Home() {
             <AuthBar
               user={user}
               showHistory={showHistory}
-              onLoginClick={() => setShowAuth(true)}
+              onLoginClick={() => {
+                setAuthMode('login')
+                setShowAuth(true)
+              }}
               onLogout={handleLogout}
               onToggleHistory={() => setShowHistory((prev) => !prev)}
             />
@@ -378,7 +388,13 @@ export default function Home() {
         </div>
       </div>
 
-      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
+      {showAuth && (
+        <AuthModal
+          key={authMode}
+          initialMode={authMode}
+          onClose={() => setShowAuth(false)}
+        />
+      )}
     </main>
   )
 }
